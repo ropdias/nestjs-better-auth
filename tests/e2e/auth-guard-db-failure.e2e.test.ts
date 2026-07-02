@@ -44,7 +44,10 @@ describe("auth guard db failure e2e", () => {
 			.get("/test/optional")
 			.expect(200);
 
-		expect(response.body).toMatchObject({ authenticated: false });
+		expect(response.body).toMatchObject({
+			authenticated: false,
+			session: null,
+		});
 	});
 
 	it("surfaces the failure on protected routes when getSession throws", async () => {
