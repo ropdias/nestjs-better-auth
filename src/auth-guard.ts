@@ -139,11 +139,26 @@ export class AuthGuard implements CanActivate {
 	 */
 	async canActivate(context: ExecutionContext): Promise<boolean> {
 		const request = await getRequestFromContext(context);
-		const session: UserSession | null = await this.options.auth.api.getSession({
-			headers: fromNodeHeaders(
-				request.headers || request?.handshake?.headers || [],
-			),
-		});
+
+		// Better Auth resolves getSession() to null for missing/invalid sessions and
+		// only rejects on infrastructure failures (e.g. an unreachable database).
+		// Capture that failure instead of letting it bubble up: routes that don't
+		// require a session (@AllowAnonymous / @OptionalAuth) must still proceed when
+		// the database is down (e.g. liveness/readiness probes), while routes that do
+		// require one still surface the original error. Mirrors the try/catch + log
+		// pattern already used by the role/permission checks below.
+		let session: UserSession | null = null;
+		let sessionError: unknown = null;
+		try {
+			session = await this.options.auth.api.getSession({
+				headers: fromNodeHeaders(
+					request.headers || request?.handshake?.headers || [],
+				),
+			});
+		} catch (error) {
+			sessionError = error;
+			console.error("Failed to retrieve session:", error);
+		}
 
 		request.session = session;
 		request.user = session?.user ?? null; // useful for observability tools like Sentry
@@ -163,6 +178,10 @@ export class AuthGuard implements CanActivate {
 		if (!session && isOptional) return true;
 
 		const ctxType = context.getType();
+		// The route requires a session. If it couldn't be retrieved because of an
+		// infrastructure error, surface that error (e.g. 500) instead of masking it
+		// as a 401 — the client's credentials aren't the problem, the server is.
+		if (sessionError) throw sessionError;
 		if (!session) throw await AuthContextErrorMap[ctxType].UNAUTHORIZED();
 
 		const headers = fromNodeHeaders(
